@@ -81,6 +81,35 @@ def build_current_response() -> MockResponse:
     )
 
 
+def build_current_response() -> MockResponse:
+    return MockResponse(
+        {
+            "current": {
+                "time": "2026-05-01T12:00",
+                "interval": 900,
+                "temperature_2m": 27.3,
+                "apparent_temperature": 28.8,
+                "relative_humidity_2m": 61,
+                "wind_speed_10m": 14.2,
+                "wind_direction_10m": 180,
+                "wind_gusts_10m": 23.4,
+                "weather_code": 1,
+            },
+            "current_units": {
+                "time": "iso8601",
+                "interval": "seconds",
+                "temperature_2m": "°C",
+                "apparent_temperature": "°C",
+                "relative_humidity_2m": "%",
+                "wind_speed_10m": "km/h",
+                "wind_direction_10m": "°",
+                "wind_gusts_10m": "km/h",
+                "weather_code": "wmo code",
+            },
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_forecast_returns_structured_daily_forecast(open_meteo_client):
     open_meteo_client(
@@ -212,3 +241,62 @@ async def test_search_location_handles_upstream_errors(open_meteo_client):
     result = await weather.search_location("Goiania")
 
     assert result == "Unable to search locations."
+
+
+@pytest.mark.asyncio
+async def test_get_current_returns_structured_conditions(open_meteo_client):
+    open_meteo_client(
+        [
+            build_search_response(
+                [
+                    build_location_payload(
+                        location_id=12345,
+                        name="Goiania",
+                        latitude=-16.6869,
+                        longitude=-49.2648,
+                    )
+                ]
+            ),
+            build_current_response(),
+        ]
+    )
+
+    result = await weather.get_current(12345)
+
+    assert result["location"]["location_id"] == 12345
+    assert result["current"] == {
+        "time": "2026-05-01T12:00",
+        "interval": 900,
+        "temperature_2m": 27.3,
+        "apparent_temperature": 28.8,
+        "relative_humidity_2m": 61,
+        "wind_speed_10m": 14.2,
+        "wind_direction_10m": 180,
+        "wind_gusts_10m": 23.4,
+        "weather_code": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_current_rejects_invalid_location_id():
+    result = await weather.get_current(0)
+
+    assert result == "Please provide a valid location id."
+
+
+@pytest.mark.asyncio
+async def test_get_current_reports_missing_location(open_meteo_client):
+    open_meteo_client([build_search_response([])])
+
+    result = await weather.get_current(999)
+
+    assert result == "Location not found."
+
+
+@pytest.mark.asyncio
+async def test_get_current_handles_upstream_errors(open_meteo_client):
+    open_meteo_client([httpx.RequestError("network error")])
+
+    result = await weather.get_current(12345)
+
+    assert result == "Unable to fetch current conditions."
