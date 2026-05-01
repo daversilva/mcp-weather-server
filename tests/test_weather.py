@@ -174,10 +174,9 @@ async def test_search_location_returns_normalized_matches(open_meteo_client):
 
     result = await weather.search_location("Goiania")
 
-    assert result["query"] == "Goiania"
-    assert result["matches"] == [
+    assert result == [
         {
-            "location_id": 12345,
+            "id": 12345,
             "name": "Goiania",
             "latitude": -16.6869,
             "longitude": -49.2648,
@@ -202,7 +201,7 @@ async def test_search_location_returns_empty_matches_for_no_results(open_meteo_c
 
     result = await weather.search_location("Unknown City")
 
-    assert result == {"query": "Unknown City", "matches": []}
+    assert result == []
 
 
 @pytest.mark.asyncio

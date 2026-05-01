@@ -25,9 +25,13 @@ def _first_location(payload: Any) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _normalize_location(location: dict[str, Any]) -> dict[str, Any]:
+def _normalize_location(
+    location: dict[str, Any],
+    *,
+    id_key: str = "location_id",
+) -> dict[str, Any]:
     return {
-        "location_id": location.get("id", location.get("location_id")),
+        id_key: location.get("id", location.get("location_id")),
         "name": location.get("name"),
         "latitude": location.get("latitude"),
         "longitude": location.get("longitude"),
@@ -73,7 +77,7 @@ async def _fetch_forecast(latitude: float, longitude: float, days: int) -> dict[
 
 
 @mcp.tool()
-async def search_location(query: str) -> dict[str, Any] | str:
+async def search_location(query: str) -> list[dict[str, Any]] | str:
     if not query.strip():
         return "Please provide a search query."
 
@@ -94,9 +98,9 @@ async def search_location(query: str) -> dict[str, Any] | str:
     for location in results:
         if not isinstance(location, dict):
             continue
-        matches.append(_normalize_location(location))
+        matches.append(_normalize_location(location, id_key="id"))
 
-    return {"query": query.strip(), "matches": matches}
+    return matches
 
 
 @mcp.tool()
