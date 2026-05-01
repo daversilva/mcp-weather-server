@@ -153,3 +153,62 @@ async def test_get_forecast_handles_upstream_errors(open_meteo_client):
     result = await weather.get_forecast(12345, 3)
 
     assert result == "Unable to fetch forecast data."
+
+
+@pytest.mark.asyncio
+async def test_search_location_returns_normalized_matches(open_meteo_client):
+    open_meteo_client(
+        [
+            build_search_response(
+                [
+                    build_location_payload(
+                        location_id=12345,
+                        name="Goiania",
+                        latitude=-16.6869,
+                        longitude=-49.2648,
+                    )
+                ]
+            )
+        ]
+    )
+
+    result = await weather.search_location("Goiania")
+
+    assert result["query"] == "Goiania"
+    assert result["matches"] == [
+        {
+            "location_id": 12345,
+            "name": "Goiania",
+            "latitude": -16.6869,
+            "longitude": -49.2648,
+            "timezone": "America/Sao_Paulo",
+            "country": "Brazil",
+            "admin1": "Goias",
+            "feature_code": "PPL",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_location_rejects_blank_query():
+    result = await weather.search_location("   ")
+
+    assert result == "Please provide a search query."
+
+
+@pytest.mark.asyncio
+async def test_search_location_returns_empty_matches_for_no_results(open_meteo_client):
+    open_meteo_client([build_search_response([])])
+
+    result = await weather.search_location("Unknown City")
+
+    assert result == {"query": "Unknown City", "matches": []}
+
+
+@pytest.mark.asyncio
+async def test_search_location_handles_upstream_errors(open_meteo_client):
+    open_meteo_client([httpx.RequestError("network error")])
+
+    result = await weather.search_location("Goiania")
+
+    assert result == "Unable to search locations."
