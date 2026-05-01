@@ -12,6 +12,17 @@ GEOCODING_SEARCH_API_BASE = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_API_BASE = "https://api.open-meteo.com/v1/forecast"
 
 FORECAST_DAILY_FIELDS = "temperature_2m_max,temperature_2m_min"
+CURRENT_FIELDS = ",".join(
+    [
+        "temperature_2m",
+        "apparent_temperature",
+        "relative_humidity_2m",
+        "wind_speed_10m",
+        "wind_direction_10m",
+        "wind_gusts_10m",
+        "weather_code",
+    ]
+)
 
 
 def _first_location(payload: Any) -> dict[str, Any] | None:
@@ -68,6 +79,22 @@ async def _fetch_forecast(latitude: float, longitude: float, days: int) -> dict[
                 "longitude": longitude,
                 "daily": FORECAST_DAILY_FIELDS,
                 "forecast_days": days,
+                "timezone": "auto",
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def _fetch_current(latitude: float, longitude: float) -> dict[str, Any]:
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            FORECAST_API_BASE,
+            params={
+                "latitude": latitude,
+                "longitude": longitude,
+                "current": CURRENT_FIELDS,
                 "timezone": "auto",
             },
             timeout=30.0,
@@ -145,6 +172,31 @@ async def get_forecast(location_id: int, days: int = 5) -> dict[str, Any] | str:
         "location": location,
         "days": days_payload,
         "units": (forecast_data.get("daily_units") if isinstance(forecast_data, dict) else {}),
+    }
+
+
+@mcp.tool()
+async def get_current(location_id: int) -> dict[str, Any] | str:
+    if not isinstance(location_id, int) or location_id <= 0:
+        return "Please provide a valid location id."
+
+    try:
+        location = await _resolve_location(location_id)
+        if not location:
+            return "Location not found."
+
+        current_data = await _fetch_current(location["latitude"], location["longitude"])
+    except Exception:
+        return "Unable to fetch current conditions."
+
+    current = current_data.get("current", {}) if isinstance(current_data, dict) else {}
+    if not current:
+        return "Unable to fetch current conditions."
+
+    return {
+        "location": location,
+        "current": current,
+        "units": (current_data.get("current_units") if isinstance(current_data, dict) else {}),
     }
 
 
