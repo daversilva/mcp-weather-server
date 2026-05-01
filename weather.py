@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("weather")
 
 GEOCODING_API_BASE = "https://geocoding-api.open-meteo.com/v1/get"
+GEOCODING_SEARCH_API_BASE = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_API_BASE = "https://api.open-meteo.com/v1/forecast"
 
 FORECAST_DAILY_FIELDS = "temperature_2m_max,temperature_2m_min"
@@ -69,6 +70,33 @@ async def _fetch_forecast(latitude: float, longitude: float, days: int) -> dict[
         )
         response.raise_for_status()
         return response.json()
+
+
+@mcp.tool()
+async def search_location(query: str) -> dict[str, Any] | str:
+    if not query.strip():
+        return "Please provide a search query."
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                GEOCODING_SEARCH_API_BASE,
+                params={"name": query.strip(), "count": 10, "language": "en"},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return "Unable to search locations."
+
+    results = payload.get("results", []) if isinstance(payload, dict) else []
+    matches = []
+    for location in results:
+        if not isinstance(location, dict):
+            continue
+        matches.append(_normalize_location(location))
+
+    return {"query": query.strip(), "matches": matches}
 
 
 @mcp.tool()
