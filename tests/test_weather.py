@@ -5,14 +5,30 @@ import weather
 from conftest import MockResponse
 
 
-def build_geocoding_response(name: str, latitude: float, longitude: float) -> MockResponse:
-    return MockResponse(
-        {
-            "results": [
-                {"name": name, "latitude": latitude, "longitude": longitude},
-            ]
-        }
-    )
+def build_location_payload(
+    *,
+    location_id: int,
+    name: str,
+    latitude: float,
+    longitude: float,
+    timezone: str = "America/Sao_Paulo",
+    country: str = "Brazil",
+    admin1: str = "Goias",
+) -> dict:
+    return {
+        "id": location_id,
+        "name": name,
+        "latitude": latitude,
+        "longitude": longitude,
+        "timezone": timezone,
+        "country": country,
+        "admin1": admin1,
+        "feature_code": "PPL",
+    }
+
+
+def build_search_response(results: list[dict]) -> MockResponse:
+    return MockResponse({"results": results})
 
 
 def build_forecast_response(
@@ -26,94 +42,114 @@ def build_forecast_response(
                 "time": times,
                 "temperature_2m_max": max_temps,
                 "temperature_2m_min": min_temps,
-            }
+            },
+            "daily_units": {
+                "time": "iso8601",
+                "temperature_2m_max": "°C",
+                "temperature_2m_min": "°C",
+            },
+        }
+    )
+
+
+def build_current_response() -> MockResponse:
+    return MockResponse(
+        {
+            "current": {
+                "time": "2026-05-01T12:00",
+                "interval": 900,
+                "temperature_2m": 27.3,
+                "apparent_temperature": 28.8,
+                "relative_humidity_2m": 61,
+                "wind_speed_10m": 14.2,
+                "wind_direction_10m": 180,
+                "wind_gusts_10m": 23.4,
+                "weather_code": 1,
+            },
+            "current_units": {
+                "time": "iso8601",
+                "interval": "seconds",
+                "temperature_2m": "°C",
+                "apparent_temperature": "°C",
+                "relative_humidity_2m": "%",
+                "wind_speed_10m": "km/h",
+                "wind_direction_10m": "°",
+                "wind_gusts_10m": "km/h",
+                "weather_code": "wmo code",
+            },
         }
     )
 
 
 @pytest.mark.asyncio
-async def test_get_forecast_formats_city_and_daily_lines(open_meteo_client):
+async def test_get_forecast_returns_structured_daily_forecast(open_meteo_client):
     open_meteo_client(
         [
-            build_geocoding_response("Goiania", -16.6869, -49.2648),
+            build_search_response(
+                [
+                    build_location_payload(
+                        location_id=12345,
+                        name="Goiania",
+                        latitude=-16.6869,
+                        longitude=-49.2648,
+                    )
+                ]
+            ),
             build_forecast_response(
                 [
                     "2026-05-01",
                     "2026-05-02",
                     "2026-05-03",
-                    "2026-05-04",
-                    "2026-05-05",
                 ],
-                [30.0, 29.0, 28.0, 27.0, 26.0],
-                [20.0, 19.0, 18.0, 17.0, 16.0],
+                [30.0, 29.0, 28.0],
+                [20.0, 19.0, 18.0],
             ),
         ]
     )
 
-    result = await weather.get_forecast("Goiania")
+    result = await weather.get_forecast(12345, 3)
 
-    assert "Goiania" in result
-    assert "2026-05-01" in result
-    assert "2026-05-05" in result
-
-
-@pytest.mark.asyncio
-async def test_get_forecast_supports_city_with_spaces(open_meteo_client):
-    open_meteo_client(
-        [
-            build_geocoding_response("New York", 40.7128, -74.0060),
-            build_forecast_response(
-                [
-                    "2026-05-01",
-                    "2026-05-02",
-                    "2026-05-03",
-                    "2026-05-04",
-                    "2026-05-05",
-                ],
-                [24.0, 23.0, 22.0, 21.0, 20.0],
-                [15.0, 14.0, 13.0, 12.0, 11.0],
-            ),
-        ]
-    )
-
-    result = await weather.get_forecast("New York")
-
-    assert "New York" in result
+    assert result["location"]["location_id"] == 12345
+    assert result["location"]["name"] == "Goiania"
+    assert result["days"] == [
+        {
+            "date": "2026-05-01",
+            "temperature_2m_max": 30.0,
+            "temperature_2m_min": 20.0,
+        },
+        {
+            "date": "2026-05-02",
+            "temperature_2m_max": 29.0,
+            "temperature_2m_min": 19.0,
+        },
+        {
+            "date": "2026-05-03",
+            "temperature_2m_max": 28.0,
+            "temperature_2m_min": 18.0,
+        },
+    ]
 
 
 @pytest.mark.asyncio
-async def test_get_forecast_rejects_empty_city():
-    result = await weather.get_forecast("")
-    assert result == "Please provide a city name."
+async def test_get_forecast_rejects_invalid_days():
+    result = await weather.get_forecast(12345, 8)
+
+    assert result == "Please provide between 1 and 7 forecast days."
 
 
 @pytest.mark.asyncio
-async def test_get_forecast_city_not_found(open_meteo_client):
-    open_meteo_client([MockResponse({"results": []})])
+async def test_get_forecast_reports_missing_location(open_meteo_client):
+    open_meteo_client([build_search_response([])])
 
-    result = await weather.get_forecast("Unknown City")
+    result = await weather.get_forecast(999, 3)
 
-    assert result == "City not found."
+    assert result == "Location not found."
 
 
 @pytest.mark.asyncio
-async def test_get_forecast_geocoding_error_returns_fetch_error(open_meteo_client):
+async def test_get_forecast_handles_upstream_errors(open_meteo_client):
     open_meteo_client([httpx.RequestError("network error")])
 
-    result = await weather.get_forecast("Goiania")
-
-    assert result == "Unable to fetch forecast data."
-
-
-@pytest.mark.asyncio
-async def test_get_forecast_forecast_api_error_returns_fetch_error(open_meteo_client):
-    open_meteo_client(
-        [
-            build_geocoding_response("Goiania", -16.6869, -49.2648),
-            httpx.RequestError("network error"),
-        ]
-    )
-
-    result = await weather.get_forecast("Goiania")
+    result = await weather.get_forecast(12345, 3)
 
     assert result == "Unable to fetch forecast data."
