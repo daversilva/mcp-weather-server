@@ -81,30 +81,16 @@ def build_current_response() -> MockResponse:
     )
 
 
-def build_current_response() -> MockResponse:
+def build_current_response_missing_fields() -> MockResponse:
     return MockResponse(
         {
             "current": {
                 "time": "2026-05-01T12:00",
-                "interval": 900,
                 "temperature_2m": 27.3,
-                "apparent_temperature": 28.8,
-                "relative_humidity_2m": 61,
-                "wind_speed_10m": 14.2,
-                "wind_direction_10m": 180,
-                "wind_gusts_10m": 23.4,
-                "weather_code": 1,
             },
             "current_units": {
                 "time": "iso8601",
-                "interval": "seconds",
                 "temperature_2m": "°C",
-                "apparent_temperature": "°C",
-                "relative_humidity_2m": "%",
-                "wind_speed_10m": "km/h",
-                "wind_direction_10m": "°",
-                "wind_gusts_10m": "km/h",
-                "weather_code": "wmo code",
             },
         }
     )
@@ -264,16 +250,35 @@ async def test_get_current_returns_structured_conditions(open_meteo_client):
 
     assert result["location"]["location_id"] == 12345
     assert result["current"] == {
-        "time": "2026-05-01T12:00",
-        "interval": 900,
-        "temperature_2m": 27.3,
-        "apparent_temperature": 28.8,
-        "relative_humidity_2m": 61,
-        "wind_speed_10m": 14.2,
-        "wind_direction_10m": 180,
-        "wind_gusts_10m": 23.4,
-        "weather_code": 1,
+        "temp_c": 27.3,
+        "humidity": 61,
+        "wind_kmh": 14.2,
+        "condition": "partly_cloudy",
+        "observed_at": "2026-05-01T12:00",
     }
+
+
+@pytest.mark.asyncio
+async def test_get_current_rejects_incomplete_current_payload(open_meteo_client):
+    open_meteo_client(
+        [
+            build_search_response(
+                [
+                    build_location_payload(
+                        location_id=12345,
+                        name="Goiania",
+                        latitude=-16.6869,
+                        longitude=-49.2648,
+                    )
+                ]
+            ),
+            build_current_response_missing_fields(),
+        ]
+    )
+
+    result = await weather.get_current(12345)
+
+    assert result == "Unable to fetch current conditions."
 
 
 @pytest.mark.asyncio
