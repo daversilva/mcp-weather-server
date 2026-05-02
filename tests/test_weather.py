@@ -8,6 +8,7 @@ from conftest import MockResponse
 
 
 _REGISTERED_TOOLS = asyncio.run(weather.mcp.list_tools())
+_REGISTERED_RESOURCES = asyncio.run(weather.mcp.list_resources())
 
 
 @pytest.mark.parametrize(
@@ -18,6 +19,27 @@ _REGISTERED_TOOLS = asyncio.run(weather.mcp.list_tools())
 def test_tool_has_description(tool):
     description = (tool.description or "").strip()
     assert description, f"Tool {tool.name!r} is missing a description"
+
+
+def test_resources_are_registered():
+    assert {str(resource.uri) for resource in _REGISTERED_RESOURCES} >= {
+        "config://units",
+        "config://supported_regions",
+    }
+
+
+@pytest.mark.asyncio
+async def test_units_resource_returns_json_text():
+    contents = await weather.mcp.read_resource("config://units")
+
+    assert contents[0].content == '{"temperature":"celsius","wind":"kmh"}'
+
+
+@pytest.mark.asyncio
+async def test_supported_regions_resource_returns_json_text():
+    contents = await weather.mcp.read_resource("config://supported_regions")
+
+    assert contents[0].content == '["BR","AR","UY","PY"]'
 
 
 def build_location_payload(
