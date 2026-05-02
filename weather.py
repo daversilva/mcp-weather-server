@@ -105,6 +105,10 @@ async def _fetch_current(latitude: float, longitude: float) -> dict[str, Any]:
 
 @mcp.tool()
 async def search_location(query: str) -> list[dict[str, Any]] | str:
+    """Resolve an ambiguous place name to canonical location IDs.
+    Use this BEFORE get_forecast or get_current. Returns matches with
+    state/country/coords for disambiguation.
+    Do NOT use to retrieve weather — only resolves names to IDs."""
     if not query.strip():
         return "Please provide a search query."
 
@@ -132,6 +136,9 @@ async def search_location(query: str) -> list[dict[str, Any]] | str:
 
 @mcp.tool()
 async def get_forecast(location_id: int, days: int = 5) -> dict[str, Any] | str:
+    """Return a 1-7 day forecast for a known location_id.
+    Requires a location_id from search_location. For current
+    conditions, use get_current instead."""
     if not isinstance(location_id, int) or location_id <= 0:
         return "Please provide a valid location id."
     if not isinstance(days, int) or days < 1 or days > 7:
@@ -177,6 +184,9 @@ async def get_forecast(location_id: int, days: int = 5) -> dict[str, Any] | str:
 
 @mcp.tool()
 async def get_current(location_id: int) -> dict[str, Any] | str:
+    """Return weather conditions RIGHT NOW for a known location_id.
+    Requires a location_id from search_location. For future
+    conditions, use get_forecast instead."""
     if not isinstance(location_id, int) or location_id <= 0:
         return "Please provide a valid location id."
 
