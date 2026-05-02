@@ -1,8 +1,23 @@
+import asyncio
+
 import httpx
 import pytest
 
 import weather
 from conftest import MockResponse
+
+
+_REGISTERED_TOOLS = asyncio.run(weather.mcp.list_tools())
+
+
+@pytest.mark.parametrize(
+    "tool",
+    _REGISTERED_TOOLS,
+    ids=[tool.name for tool in _REGISTERED_TOOLS],
+)
+def test_tool_has_description(tool):
+    description = (tool.description or "").strip()
+    assert description, f"Tool {tool.name!r} is missing a description"
 
 
 def build_location_payload(
