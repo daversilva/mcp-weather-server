@@ -5,7 +5,7 @@ from importlib import resources
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 mcp = FastMCP("weather")
 
@@ -80,6 +80,14 @@ def _normalize_location(
     }
 
 
+async def _notify_info(ctx: Context | None, message: str) -> None:
+    if ctx is not None:
+        try:
+            await ctx.info(message)
+        except Exception:
+            pass
+
+
 async def _resolve_location(location_id: int) -> dict[str, Any] | None:
     async with httpx.AsyncClient() as client:
         response = await client.get(
@@ -131,7 +139,7 @@ async def _fetch_current(latitude: float, longitude: float) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def search_location(query: str) -> list[dict[str, Any]] | str:
+async def search_location(query: str, ctx: Context | None = None) -> list[dict[str, Any]] | str:
     """Resolve an ambiguous place name to canonical location IDs.
     Use this BEFORE get_forecast or get_current. Returns matches with
     state/country/coords for disambiguation.
@@ -140,6 +148,7 @@ async def search_location(query: str) -> list[dict[str, Any]] | str:
         return "Please provide a search query."
 
     try:
+        await _notify_info(ctx, f"searching locations for {query.strip()}")
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 GEOCODING_SEARCH_API_BASE,
@@ -162,7 +171,7 @@ async def search_location(query: str) -> list[dict[str, Any]] | str:
 
 
 @mcp.tool()
-async def get_forecast(location_id: int, days: int = 5) -> dict[str, Any] | str:
+async def get_forecast(location_id: int, days: int = 5, ctx: Context | None = None) -> dict[str, Any] | str:
     """Return a 1-7 day forecast for a known location_id.
     Requires a location_id from search_location. For current
     conditions, use get_current instead."""
@@ -172,10 +181,12 @@ async def get_forecast(location_id: int, days: int = 5) -> dict[str, Any] | str:
         return "Please provide between 1 and 7 forecast days."
 
     try:
+        await _notify_info(ctx, "resolving location for forecast")
         location = await _resolve_location(location_id)
         if not location:
             return "Location not found."
 
+        await _notify_info(ctx, "fetching forecast")
         forecast_data = await _fetch_forecast(
             location["latitude"],
             location["longitude"],
@@ -210,7 +221,7 @@ async def get_forecast(location_id: int, days: int = 5) -> dict[str, Any] | str:
 
 
 @mcp.tool()
-async def get_current(location_id: int) -> dict[str, Any] | str:
+async def get_current(location_id: int, ctx: Context | None = None) -> dict[str, Any] | str:
     """Return weather conditions RIGHT NOW for a known location_id.
     Requires a location_id from search_location. For future
     conditions, use get_forecast instead."""
@@ -218,10 +229,12 @@ async def get_current(location_id: int) -> dict[str, Any] | str:
         return "Please provide a valid location id."
 
     try:
+        await _notify_info(ctx, "resolving location for current conditions")
         location = await _resolve_location(location_id)
         if not location:
             return "Location not found."
 
+        await _notify_info(ctx, "fetching current conditions")
         current_data = await _fetch_current(location["latitude"], location["longitude"])
     except Exception:
         return "Unable to fetch current conditions."

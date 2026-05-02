@@ -152,6 +152,14 @@ def build_current_response() -> MockResponse:
     )
 
 
+class FakeContext:
+    def __init__(self):
+        self.info_messages: list[str] = []
+
+    async def info(self, message: str, **extra):
+        self.info_messages.append(message)
+
+
 def build_current_response() -> MockResponse:
     return MockResponse(
         {
@@ -183,6 +191,7 @@ def build_current_response() -> MockResponse:
 
 @pytest.mark.asyncio
 async def test_get_forecast_returns_structured_daily_forecast(open_meteo_client):
+    ctx = FakeContext()
     open_meteo_client(
         [
             build_search_response(
@@ -207,7 +216,12 @@ async def test_get_forecast_returns_structured_daily_forecast(open_meteo_client)
         ]
     )
 
-    result = await weather.get_forecast(12345, 3)
+    result = await weather.get_forecast(12345, 3, ctx=ctx)
+
+    assert ctx.info_messages == [
+        "resolving location for forecast",
+        "fetching forecast",
+    ]
 
     assert result["location"]["location_id"] == 12345
     assert result["location"]["name"] == "Goiania"
@@ -232,31 +246,38 @@ async def test_get_forecast_returns_structured_daily_forecast(open_meteo_client)
 
 @pytest.mark.asyncio
 async def test_get_forecast_rejects_invalid_days():
-    result = await weather.get_forecast(12345, 8)
+    ctx = FakeContext()
+    result = await weather.get_forecast(12345, 8, ctx=ctx)
 
+    assert ctx.info_messages == []
     assert result == "Please provide between 1 and 7 forecast days."
 
 
 @pytest.mark.asyncio
 async def test_get_forecast_reports_missing_location(open_meteo_client):
+    ctx = FakeContext()
     open_meteo_client([build_search_response([])])
 
-    result = await weather.get_forecast(999, 3)
+    result = await weather.get_forecast(999, 3, ctx=ctx)
 
+    assert ctx.info_messages == ["resolving location for forecast"]
     assert result == "Location not found."
 
 
 @pytest.mark.asyncio
 async def test_get_forecast_handles_upstream_errors(open_meteo_client):
+    ctx = FakeContext()
     open_meteo_client([httpx.RequestError("network error")])
 
-    result = await weather.get_forecast(12345, 3)
+    result = await weather.get_forecast(12345, 3, ctx=ctx)
 
+    assert ctx.info_messages == ["resolving location for forecast"]
     assert result == "Unable to fetch forecast data."
 
 
 @pytest.mark.asyncio
 async def test_search_location_returns_normalized_matches(open_meteo_client):
+    ctx = FakeContext()
     open_meteo_client(
         [
             build_search_response(
@@ -272,7 +293,9 @@ async def test_search_location_returns_normalized_matches(open_meteo_client):
         ]
     )
 
-    result = await weather.search_location("Goiania")
+    result = await weather.search_location("Goiania", ctx=ctx)
+
+    assert ctx.info_messages == ["searching locations for Goiania"]
 
     assert result == [
         {
@@ -290,31 +313,39 @@ async def test_search_location_returns_normalized_matches(open_meteo_client):
 
 @pytest.mark.asyncio
 async def test_search_location_rejects_blank_query():
-    result = await weather.search_location("   ")
+    ctx = FakeContext()
+    result = await weather.search_location("   ", ctx=ctx)
 
+    assert ctx.info_messages == []
     assert result == "Please provide a search query."
 
 
 @pytest.mark.asyncio
 async def test_search_location_returns_empty_matches_for_no_results(open_meteo_client):
+    ctx = FakeContext()
     open_meteo_client([build_search_response([])])
 
-    result = await weather.search_location("Unknown City")
+    result = await weather.search_location("Unknown City", ctx=ctx)
+
+    assert ctx.info_messages == ["searching locations for Unknown City"]
 
     assert result == []
 
 
 @pytest.mark.asyncio
 async def test_search_location_handles_upstream_errors(open_meteo_client):
+    ctx = FakeContext()
     open_meteo_client([httpx.RequestError("network error")])
 
-    result = await weather.search_location("Goiania")
+    result = await weather.search_location("Goiania", ctx=ctx)
 
+    assert ctx.info_messages == ["searching locations for Goiania"]
     assert result == "Unable to search locations."
 
 
 @pytest.mark.asyncio
 async def test_get_current_returns_structured_conditions(open_meteo_client):
+    ctx = FakeContext()
     open_meteo_client(
         [
             build_search_response(
@@ -331,7 +362,12 @@ async def test_get_current_returns_structured_conditions(open_meteo_client):
         ]
     )
 
-    result = await weather.get_current(12345)
+    result = await weather.get_current(12345, ctx=ctx)
+
+    assert ctx.info_messages == [
+        "resolving location for current conditions",
+        "fetching current conditions",
+    ]
 
     assert result["location"]["location_id"] == 12345
     assert result["current"] == {
@@ -349,24 +385,30 @@ async def test_get_current_returns_structured_conditions(open_meteo_client):
 
 @pytest.mark.asyncio
 async def test_get_current_rejects_invalid_location_id():
-    result = await weather.get_current(0)
+    ctx = FakeContext()
+    result = await weather.get_current(0, ctx=ctx)
 
+    assert ctx.info_messages == []
     assert result == "Please provide a valid location id."
 
 
 @pytest.mark.asyncio
 async def test_get_current_reports_missing_location(open_meteo_client):
+    ctx = FakeContext()
     open_meteo_client([build_search_response([])])
 
-    result = await weather.get_current(999)
+    result = await weather.get_current(999, ctx=ctx)
 
+    assert ctx.info_messages == ["resolving location for current conditions"]
     assert result == "Location not found."
 
 
 @pytest.mark.asyncio
 async def test_get_current_handles_upstream_errors(open_meteo_client):
+    ctx = FakeContext()
     open_meteo_client([httpx.RequestError("network error")])
 
-    result = await weather.get_current(12345)
+    result = await weather.get_current(12345, ctx=ctx)
 
+    assert ctx.info_messages == ["resolving location for current conditions"]
     assert result == "Unable to fetch current conditions."
