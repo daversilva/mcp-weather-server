@@ -10,6 +10,7 @@ from conftest import MockResponse
 
 _REGISTERED_TOOLS = asyncio.run(weather.mcp.list_tools())
 _REGISTERED_RESOURCES = asyncio.run(weather.mcp.list_resources())
+_REGISTERED_PROMPTS = asyncio.run(weather.mcp.list_prompts())
 
 
 @pytest.mark.parametrize(
@@ -27,6 +28,33 @@ def test_resources_are_registered():
         "config://units",
         "config://supported_regions",
     }
+
+
+def test_trip_weather_briefing_prompt_is_registered():
+    prompt_names = {prompt.name for prompt in _REGISTERED_PROMPTS}
+
+    assert "trip_weather_briefing" in prompt_names
+
+
+def test_trip_weather_briefing_prompt_has_description_and_arguments():
+    prompt = next(prompt for prompt in _REGISTERED_PROMPTS if prompt.name == "trip_weather_briefing")
+
+    assert (prompt.description or "").strip()
+    assert [argument.name for argument in prompt.arguments or []] == ["destination", "days"]
+
+
+@pytest.mark.asyncio
+async def test_trip_weather_briefing_prompt_renders_instructions():
+    result = await weather.mcp.get_prompt(
+        "trip_weather_briefing",
+        {"destination": "Goiania", "days": 3},
+    )
+
+    assert result.messages[0].role == "user"
+    assert "search_location" in result.messages[0].content.text
+    assert "get_forecast" in result.messages[0].content.text
+    assert "Goiania" in result.messages[0].content.text
+    assert "3" in result.messages[0].content.text
 
 
 @pytest.mark.asyncio

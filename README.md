@@ -8,6 +8,10 @@ Small MCP server backed by Open-Meteo.
 - `get_current(location_id)`
 - `get_forecast(location_id, days=5)`
 
+## Prompts
+
+- `trip_weather_briefing(destination, days)` plans a trip weather check by calling `search_location`, then `get_forecast`, then summarizing what to pack.
+
 ## Resources
 
 - `config://units`

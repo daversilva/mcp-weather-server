@@ -237,6 +237,17 @@ async def get_current(location_id: int) -> dict[str, Any] | str:
     }
 
 
+@mcp.prompt(description="Plan a trip weather briefing for a destination and trip length.")
+def trip_weather_briefing(destination: str, days: int) -> str:
+    return (
+        f"Prepare a weather briefing for a trip to {destination} lasting {days} days.\n"
+        f"1. Call search_location with {destination!r}.\n"
+        "2. If there are multiple matches, choose the best match and note the assumption.\n"
+        f"3. Call get_forecast with the selected location id and {days} days.\n"
+        "4. Summarize the weather and what to pack."
+    )
+
+
 def main():
     mcp.run(transport="stdio")
 
