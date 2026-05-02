@@ -1,3 +1,4 @@
+import json
 import asyncio
 
 import httpx
@@ -39,7 +40,12 @@ async def test_units_resource_returns_json_text():
 async def test_supported_regions_resource_returns_json_text():
     contents = await weather.mcp.read_resource("config://supported_regions")
 
-    assert contents[0].content == '["BR","AR","UY","PY"]'
+    regions = json.loads(contents[0].content)
+
+    assert regions == weather.SUPPORTED_REGIONS
+    assert len(regions) == 249
+    for code in {"US", "GB", "ZW"}:
+        assert code in regions
 
 
 def build_location_payload(
