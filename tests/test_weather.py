@@ -11,6 +11,7 @@ from conftest import MockResponse
 _REGISTERED_TOOLS = asyncio.run(weather.mcp.list_tools())
 _REGISTERED_RESOURCES = asyncio.run(weather.mcp.list_resources())
 _REGISTERED_PROMPTS = asyncio.run(weather.mcp.list_prompts())
+_REGISTERED_TOOL_METADATA = {tool.name: tool.model_dump() for tool in _REGISTERED_TOOLS}
 
 
 @pytest.mark.parametrize(
@@ -21,6 +22,22 @@ _REGISTERED_PROMPTS = asyncio.run(weather.mcp.list_prompts())
 def test_tool_has_description(tool):
     description = (tool.description or "").strip()
     assert description, f"Tool {tool.name!r} is missing a description"
+
+
+def test_tools_have_expected_arguments():
+    assert set(_REGISTERED_TOOL_METADATA) == {
+        "search_location",
+        "get_forecast",
+        "get_current",
+    }
+    assert list(_REGISTERED_TOOL_METADATA["search_location"]["inputSchema"]["properties"]) == ["query"]
+    assert list(_REGISTERED_TOOL_METADATA["get_forecast"]["inputSchema"]["properties"]) == [
+        "location_id",
+        "days",
+    ]
+    assert list(_REGISTERED_TOOL_METADATA["get_current"]["inputSchema"]["properties"]) == [
+        "location_id",
+    ]
 
 
 def test_resources_are_registered():
@@ -152,14 +169,6 @@ def build_current_response() -> MockResponse:
     )
 
 
-class FakeContext:
-    def __init__(self):
-        self.info_messages: list[str] = []
-
-    async def info(self, message: str, **extra):
-        self.info_messages.append(message)
-
-
 def build_current_response() -> MockResponse:
     return MockResponse(
         {
@@ -187,6 +196,39 @@ def build_current_response() -> MockResponse:
             },
         }
     )
+
+
+class FakeContext:
+    def __init__(self, lifespan_context: dict | None = None):
+        self.info_messages: list[str] = []
+        if lifespan_context is not None:
+            self.fastmcp = type(
+                "FakeFastMCP",
+                (),
+                {
+                    "request_context": type(
+                        "FakeRequestContext",
+                        (),
+                        {"lifespan_context": lifespan_context},
+                    )()
+                },
+            )()
+
+    async def info(self, message: str, **extra):
+        self.info_messages.append(message)
+
+
+class SharedMockClient:
+    def __init__(self, responses: list[MockResponse | Exception]):
+        self.responses = responses
+        self.calls: list[tuple[str, dict | None, float]] = []
+
+    async def get(self, url: str, timeout: float = 30.0, params: dict | None = None):
+        self.calls.append((url, params, timeout))
+        next_item = self.responses.pop(0)
+        if isinstance(next_item, Exception):
+            raise next_item
+        return next_item
 
 
 @pytest.mark.asyncio
@@ -242,6 +284,47 @@ async def test_get_forecast_returns_structured_daily_forecast(open_meteo_client)
             "temperature_2m_min": 18.0,
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_shared_lifespan_client_is_reused(monkeypatch):
+    shared_client = SharedMockClient(
+        [
+            build_search_response(
+                [
+                    build_location_payload(
+                        location_id=12345,
+                        name="Goiania",
+                        latitude=-16.6869,
+                        longitude=-49.2648,
+                    )
+                ]
+            ),
+            build_search_response(
+                [
+                    build_location_payload(
+                        location_id=12345,
+                        name="Goiania",
+                        latitude=-16.6869,
+                        longitude=-49.2648,
+                    )
+                ]
+            ),
+            build_current_response(),
+        ]
+    )
+    ctx = FakeContext({"http_client": shared_client})
+    monkeypatch.setattr(
+        weather.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fallback client used")),
+    )
+
+    await weather.search_location("Goiania", ctx=ctx)
+    result = await weather.get_current(12345, ctx=ctx)
+
+    assert len(shared_client.calls) == 3
+    assert result["current"]["temperature_2m"] == 27.3
 
 
 @pytest.mark.asyncio
@@ -412,3 +495,12 @@ async def test_get_current_handles_upstream_errors(open_meteo_client):
 
     assert ctx.info_messages == ["resolving location for current conditions"]
     assert result == "Unable to fetch current conditions."
+
+
+def test_main_bootstraps_stdio_transport(monkeypatch):
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(weather.mcp, "run", lambda **kwargs: calls.append(kwargs))
+
+    weather.main()
+
+    assert calls == [{"transport": "stdio"}]
