@@ -267,6 +267,15 @@ Coverage at a glance:
 - 4 tests on `get_current` (happy, invalid id, missing location, upstream error)
 - 7 tests on prompts/resources/tool metadata
 
+### Long-call notifications
+
+The weather tools now accept an optional FastMCP `Context` so the server can send host-visible info messages during slower calls.
+
+- `search_location` sends `searching locations for ...` before the geocoding lookup.
+- `get_forecast` sends `resolving location for forecast`, then `fetching forecast`.
+- `get_current` sends `resolving location for current conditions`, then `fetching current conditions`.
+- Validation failures stay silent; the same friendly error strings still return, but no notification is emitted when input is rejected locally.
+
 ---
 
 ## Part V — Glossary
