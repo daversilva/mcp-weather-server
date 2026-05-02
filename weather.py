@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -23,6 +24,24 @@ CURRENT_FIELDS = ",".join(
         "weather_code",
     ]
 )
+UNITS_CONFIG = {"temperature": "celsius", "wind": "kmh"}
+SUPPORTED_REGIONS = ["BR", "AR", "UY", "PY"]
+
+
+def _json_text(payload: Any) -> str:
+    return json.dumps(payload, separators=(",", ":"))
+
+
+@mcp.resource("config://units")
+def units_config() -> str:
+    """Read-only weather unit defaults."""
+    return _json_text(UNITS_CONFIG)
+
+
+@mcp.resource("config://supported_regions")
+def supported_regions_config() -> str:
+    """Read-only list of supported regions."""
+    return _json_text(SUPPORTED_REGIONS)
 
 
 def _first_location(payload: Any) -> dict[str, Any] | None:
