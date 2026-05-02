@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
+import sys
+from contextlib import asynccontextmanager
 from importlib import resources
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
-
-mcp = FastMCP("weather")
 
 GEOCODING_API_BASE = "https://geocoding-api.open-meteo.com/v1/get"
 GEOCODING_SEARCH_API_BASE = "https://geocoding-api.open-meteo.com/v1/search"
@@ -38,6 +39,32 @@ SUPPORTED_REGIONS = _load_supported_regions()
 
 def _json_text(payload: Any) -> str:
     return json.dumps(payload, separators=(",", ":"))
+
+
+logger = logging.getLogger("mcp_weather_server.weather")
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+
+
+def _log_event(event: str, **fields: Any) -> None:
+    logger.info(_json_text({"event": event, **fields}))
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        _log_event("lifespan.start")
+        try:
+            yield {"http_client": client}
+        finally:
+            _log_event("lifespan.stop")
+
+
+mcp = FastMCP("weather", lifespan=_lifespan)
 
 
 @mcp.resource("config://units")
@@ -88,15 +115,51 @@ async def _notify_info(ctx: Context | None, message: str) -> None:
             pass
 
 
-async def _resolve_location(location_id: int) -> dict[str, Any] | None:
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            GEOCODING_API_BASE,
-            params={"id": location_id},
-            timeout=30.0,
-        )
+def _shared_http_client(ctx: Context | None) -> httpx.AsyncClient | None:
+    if ctx is None:
+        return None
+
+    try:
+        request_context = ctx.fastmcp.request_context
+    except Exception:
+        return None
+
+    lifespan_context = getattr(request_context, "lifespan_context", None)
+    if isinstance(lifespan_context, dict):
+        client = lifespan_context.get("http_client")
+        if client is not None:
+            return client
+
+    return None
+
+
+@asynccontextmanager
+async def _http_client(ctx: Context | None) -> AsyncIterator[httpx.AsyncClient]:
+    client = _shared_http_client(ctx)
+    if client is not None:
+        yield client
+        return
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        yield client
+
+
+async def _request_json(
+    url: str,
+    params: dict[str, Any],
+    *,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    async with _http_client(ctx) as client:
+        response = await client.get(url, params=params, timeout=30.0)
         response.raise_for_status()
         payload = response.json()
+
+    return payload if isinstance(payload, dict) else {}
+
+
+async def _resolve_location(location_id: int, ctx: Context | None = None) -> dict[str, Any] | None:
+    payload = await _request_json(GEOCODING_API_BASE, {"id": location_id}, ctx=ctx)
 
     location = _first_location(payload)
     if not location:
@@ -105,37 +168,42 @@ async def _resolve_location(location_id: int) -> dict[str, Any] | None:
     return _normalize_location(location)
 
 
-async def _fetch_forecast(latitude: float, longitude: float, days: int) -> dict[str, Any]:
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            FORECAST_API_BASE,
-            params={
-                "latitude": latitude,
-                "longitude": longitude,
-                "daily": FORECAST_DAILY_FIELDS,
-                "forecast_days": days,
-                "timezone": "auto",
-            },
-            timeout=30.0,
-        )
-        response.raise_for_status()
-        return response.json()
+async def _fetch_forecast(
+    latitude: float,
+    longitude: float,
+    days: int,
+    *,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    return await _request_json(
+        FORECAST_API_BASE,
+        {
+            "latitude": latitude,
+            "longitude": longitude,
+            "daily": FORECAST_DAILY_FIELDS,
+            "forecast_days": days,
+            "timezone": "auto",
+        },
+        ctx=ctx,
+    )
 
 
-async def _fetch_current(latitude: float, longitude: float) -> dict[str, Any]:
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            FORECAST_API_BASE,
-            params={
-                "latitude": latitude,
-                "longitude": longitude,
-                "current": CURRENT_FIELDS,
-                "timezone": "auto",
-            },
-            timeout=30.0,
-        )
-        response.raise_for_status()
-        return response.json()
+async def _fetch_current(
+    latitude: float,
+    longitude: float,
+    *,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    return await _request_json(
+        FORECAST_API_BASE,
+        {
+            "latitude": latitude,
+            "longitude": longitude,
+            "current": CURRENT_FIELDS,
+            "timezone": "auto",
+        },
+        ctx=ctx,
+    )
 
 
 @mcp.tool()
@@ -148,16 +216,16 @@ async def search_location(query: str, ctx: Context | None = None) -> list[dict[s
         return "Please provide a search query."
 
     try:
-        await _notify_info(ctx, f"searching locations for {query.strip()}")
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                GEOCODING_SEARCH_API_BASE,
-                params={"name": query.strip(), "count": 10, "language": "en"},
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            payload = response.json()
+        cleaned_query = query.strip()
+        _log_event("search_location.request", query=cleaned_query)
+        await _notify_info(ctx, f"searching locations for {cleaned_query}")
+        payload = await _request_json(
+            GEOCODING_SEARCH_API_BASE,
+            {"name": cleaned_query, "count": 10, "language": "en"},
+            ctx=ctx,
+        )
     except Exception:
+        logger.exception(_json_text({"event": "search_location.error", "query": query.strip()}))
         return "Unable to search locations."
 
     results = payload.get("results", []) if isinstance(payload, dict) else []
@@ -181,9 +249,11 @@ async def get_forecast(location_id: int, days: int = 5, ctx: Context | None = No
         return "Please provide between 1 and 7 forecast days."
 
     try:
+        _log_event("get_forecast.request", location_id=location_id, days=days)
         await _notify_info(ctx, "resolving location for forecast")
-        location = await _resolve_location(location_id)
+        location = await _resolve_location(location_id, ctx=ctx)
         if not location:
+            _log_event("get_forecast.location_missing", location_id=location_id)
             return "Location not found."
 
         await _notify_info(ctx, "fetching forecast")
@@ -191,8 +261,12 @@ async def get_forecast(location_id: int, days: int = 5, ctx: Context | None = No
             location["latitude"],
             location["longitude"],
             days,
+            ctx=ctx,
         )
     except Exception:
+        logger.exception(
+            _json_text({"event": "get_forecast.error", "location_id": location_id, "days": days})
+        )
         return "Unable to fetch forecast data."
 
     daily = forecast_data.get("daily", {}) if isinstance(forecast_data, dict) else {}
@@ -229,14 +303,17 @@ async def get_current(location_id: int, ctx: Context | None = None) -> dict[str,
         return "Please provide a valid location id."
 
     try:
+        _log_event("get_current.request", location_id=location_id)
         await _notify_info(ctx, "resolving location for current conditions")
-        location = await _resolve_location(location_id)
+        location = await _resolve_location(location_id, ctx=ctx)
         if not location:
+            _log_event("get_current.location_missing", location_id=location_id)
             return "Location not found."
 
         await _notify_info(ctx, "fetching current conditions")
-        current_data = await _fetch_current(location["latitude"], location["longitude"])
+        current_data = await _fetch_current(location["latitude"], location["longitude"], ctx=ctx)
     except Exception:
+        logger.exception(_json_text({"event": "get_current.error", "location_id": location_id}))
         return "Unable to fetch current conditions."
 
     current = current_data.get("current", {}) if isinstance(current_data, dict) else {}
@@ -261,7 +338,7 @@ def trip_weather_briefing(destination: str, days: int) -> str:
     )
 
 
-def main():
+def main() -> None:
     mcp.run(transport="stdio")
 
 

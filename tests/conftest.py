@@ -48,6 +48,10 @@ class MockAsyncClient:
 @pytest.fixture
 def open_meteo_client(monkeypatch: pytest.MonkeyPatch):
     def _patch(responses: list[MockResponse | Exception]) -> None:
-        monkeypatch.setattr(weather.httpx, "AsyncClient", lambda: MockAsyncClient(responses))
+        monkeypatch.setattr(
+            weather.httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: MockAsyncClient(responses),
+        )
 
     return _patch

@@ -26,7 +26,13 @@ uv sync
 ## Run
 
 ```bash
-uv run python weather.py
+uv run python -m mcp_weather_server
+```
+
+Or, if installed as a script:
+
+```bash
+mcp-weather-server
 ```
 
 ## Tests
