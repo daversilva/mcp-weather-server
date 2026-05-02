@@ -16,8 +16,8 @@ MCP standardizes three kinds of capability a server can expose:
 | Primitive | What it is | Example in this repo |
 |-----------|------------|----------------------|
 | **Tool** | A function the model can call to *act*. Has a JSON Schema for its inputs and returns structured output. | `search_location`, `get_forecast`, `get_current` |
-| **Resource** | Read-only data the model can pull into context (files, DB rows, URLs). | *not used yet* |
-| **Prompt** | A reusable prompt template the host can surface to the user. | *not used yet* |
+| **Resource** | Read-only data the model can pull into context (files, DB rows, URLs). | `config://units`, `config://supported_regions` |
+| **Prompt** | A reusable prompt template the host can surface to the user. | `trip_weather_briefing` |
 
 For the CCAF, remember the slogan: **"Resources give the model knowledge; tools give it agency; prompts give it structure."**
 
@@ -50,9 +50,11 @@ The model never sees the Python — it only sees the *schema* and the *return va
 
 - `mcp = FastMCP("name")` creates a server.
 - `@mcp.tool()` registers an async (or sync) function as a tool. The function's **type hints become the JSON Schema** of `arguments`; its **docstring becomes the tool's `description`**; its **return value** becomes the result.
+- `@mcp.resource()` registers read-only data by URI.
+- `@mcp.prompt()` registers a reusable prompt template.
 - `mcp.run(transport="stdio")` starts the event loop.
 
-**Why this matters for Claude.** When Claude Code or Claude Desktop is configured with this server, it auto-discovers the three tools and can call them mid-conversation. The model doesn't need to know it's calling Open-Meteo; it only sees `get_forecast(location_id, days)`.
+**Why this matters for Claude.** When Claude Code or Claude Desktop is configured with this server, it auto-discovers the tools, resources, and prompts and can use them mid-conversation. The model doesn't need to know it's calling Open-Meteo; it only sees `get_forecast(location_id, days)` and the surrounding host-facing metadata.
 
 ---
 
@@ -62,24 +64,33 @@ The model never sees the Python — it only sees the *schema* and the *return va
 
 ```
 mcp-weather-server/
-├── weather.py          # the entire MCP server
+├── weather.py          # thin entrypoint shim
+├── mcp_weather_server/
+│   ├── weather.py      # FastMCP server, tools, prompts, resources
+│   └── data/
+│       └── supported_regions.json
 ├── pyproject.toml      # deps: mcp[cli], httpx, pytest, pytest-asyncio
 ├── tests/
 │   ├── conftest.py     # MockAsyncClient fixture (monkeypatches httpx)
-│   └── test_weather.py # 11 async tests
+│   └── test_weather.py # 19 test functions (21 pytest items)
 └── README.md
 ```
 
 ### Server bootstrap (theory: §2 transport, §4 FastMCP)
 
 ```python
-# weather.py:6-8
-from mcp.server.fastmcp import FastMCP
-mcp = FastMCP("weather")
+# weather.py
+from mcp_weather_server.weather import *
+
+if __name__ == "__main__":
+    main()
 ```
 
 ```python
-# weather.py:203-208
+# mcp_weather_server/weather.py
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("weather")
+
 def main():
     mcp.run(transport="stdio")
 
@@ -87,7 +98,17 @@ if __name__ == "__main__":
     main()
 ```
 
-That's it — the framework owns the JSON-RPC loop. Everything else in the file is either a **tool** or a private helper.
+The shim just imports the package module and hands off to its `main()`.
+
+### Prompts and resources
+
+This repo now exposes all three MCP primitives:
+
+- `trip_weather_briefing(destination, days)` is a prompt template, not a tool. It returns a reusable instruction set that tells the host how to chain `search_location` and `get_forecast`.
+- `config://units` is a resource for the server's unit defaults.
+- `config://supported_regions` is a resource backed by `mcp_weather_server/data/supported_regions.json`, loaded through `importlib.resources`.
+
+The pattern matters: tools act, resources inform, prompts shape the conversation.
 
 ### Tool descriptions: the docstring **is** the model's instruction manual
 
@@ -96,7 +117,6 @@ When FastMCP builds the schema returned by `tools/list`, it pulls each tool's `d
 Look at the three tools in this repo:
 
 ```python
-# weather.py:108-111
 """Resolve an ambiguous place name to canonical location IDs.
 Use this BEFORE get_forecast or get_current. Returns matches with
 state/country/coords for disambiguation.
@@ -104,17 +124,15 @@ Do NOT use to retrieve weather — only resolves names to IDs."""
 ```
 
 ```python
-# weather.py:139-141
 """Return a 1-7 day forecast for a known location_id.
 Requires a location_id from search_location. For current
 conditions, use get_current instead."""
 ```
 
 ```python
-# weather.py:187-189
 """Return weather conditions RIGHT NOW for a known location_id.
 Requires a location_id from search_location. For future
-conditions, use get_current instead."""
+conditions, use get_forecast instead."""
 ```
 
 Three theoretical patterns are at work here:
@@ -127,7 +145,7 @@ Three theoretical patterns are at work here:
 
 ### The three tools
 
-#### 2.1 `search_location(query)` — discovery (weather.py:106–134)
+#### 2.1 `search_location(query)` — discovery
 
 ```python
 @mcp.tool()
@@ -139,11 +157,11 @@ async def search_location(query: str) -> list[dict[str, Any]] | str:
 ```
 
 - **Why it exists.** The user types "Lisbon" — the model needs an `id` it can pass to other tools. This is the *entry point* of the location pipeline.
-- **External call.** `GET https://geocoding-api.open-meteo.com/v1/search?name=...&count=10&language=en` (weather.py:11, 117–121).
+- **External call.** `GET https://geocoding-api.open-meteo.com/v1/search?name=...&count=10&language=en`.
 - **Output shape.** A list of dicts each containing `id`, `name`, `latitude`, `longitude`, `timezone`, `country`, `admin1`, `feature_code`. Note the field is **`id`** here, not `location_id` — see *Architectural Evolution* below.
-- **Failure modes.** Blank query → friendly string. Network error → `"Unable to search locations."` (weather.py:124–125). Returning a string instead of throwing keeps the model's experience deterministic.
+- **Failure modes.** Blank query → friendly string. Network error → `"Unable to search locations."` Returning a string instead of throwing keeps the model's experience deterministic.
 
-#### 2.2 `get_forecast(location_id, days=5)` — daily forecast (weather.py:137–182)
+#### 2.2 `get_forecast(location_id, days=5)` — daily forecast
 
 ```python
 @mcp.tool()
@@ -159,11 +177,11 @@ async def get_forecast(location_id: int, days: int = 5) -> dict[str, Any] | str:
 ```
 
 - **Two-hop pattern.** First resolve the id to coordinates, then call the forecast API. This is the clearest example of the *id-first* architecture.
-- **Constants.** `FORECAST_DAILY_FIELDS = "temperature_2m_max,temperature_2m_min"` (weather.py:14).
-- **Output.** `{location, days: [...], units}` where each day has `date`, `temperature_2m_max`, `temperature_2m_min` (weather.py:168–182).
+- **Constants.** `FORECAST_DAILY_FIELDS = "temperature_2m_max,temperature_2m_min"`.
+- **Output.** `{location, days: [...], units}` where each day has `date`, `temperature_2m_max`, `temperature_2m_min`.
 - **Bounds.** `1 <= days <= 7` is enforced because Open-Meteo's free tier caps the range and we want to fail fast at the tool boundary.
 
-#### 2.3 `get_current(location_id)` — real-time (weather.py:185–210)
+#### 2.3 `get_current(location_id)` — real-time
 
 ```python
 @mcp.tool()
@@ -173,19 +191,20 @@ async def get_current(location_id: int) -> dict[str, Any] | str:
     current_data = await _fetch_current(location["latitude"], location["longitude"])
 ```
 
-- Uses the **same forecast endpoint** but with `current=...` instead of `daily=...` (weather.py:90–103).
-- Seven fields are fetched (weather.py:15–25): `temperature_2m`, `apparent_temperature`, `relative_humidity_2m`, `wind_speed_10m`, `wind_direction_10m`, `wind_gusts_10m`, `weather_code`.
+- Uses the **same forecast endpoint** but with `current=...` instead of `daily=...`.
+- Seven fields are fetched: `temperature_2m`, `apparent_temperature`, `relative_humidity_2m`, `wind_speed_10m`, `wind_direction_10m`, `wind_gusts_10m`, `weather_code`.
 - The `weather_code` is a **WMO code** (integer mapping to a textual condition like "clear sky" / "fog" / "thunderstorm"). The model can interpret it directly.
 
 ### Internal helpers
 
-| Helper | Lines | Purpose |
-|--------|-------|---------|
-| `_first_location(payload)` | 28–36 | Defensively pull the first hit from either `{"results":[...]}` or a plain dict — the geocoding API returns both shapes depending on endpoint. |
-| `_normalize_location(loc, id_key=...)` | 39–53 | Project the raw API dict onto a stable shape. Configurable `id_key` is the keystone of the architectural evolution below. |
-| `_resolve_location(id)` | 56–70 | Async `id → location dict` lookup. Used by both id-based tools. |
-| `_fetch_forecast(lat, lon, days)` | 73–87 | Daily forecast HTTP call. |
-| `_fetch_current(lat, lon)` | 90–103 | Current conditions HTTP call. |
+| Helper | Purpose |
+|--------|---------|
+| `_load_supported_regions()` | Loads the JSON-backed region list via `importlib.resources`. |
+| `_first_location(payload)` | Defensively pull the first hit from either `{"results":[...]}` or a plain dict — the geocoding API returns both shapes depending on endpoint. |
+| `_normalize_location(loc, id_key=...)` | Project the raw API dict onto a stable shape. Configurable `id_key` is the keystone of the architectural evolution below. |
+| `_resolve_location(id)` | Async `id → location dict` lookup. Used by both id-based tools. |
+| `_fetch_forecast(lat, lon, days)` | Daily forecast HTTP call. |
+| `_fetch_current(lat, lon)` | Current conditions HTTP call. |
 
 ### Architectural evolution (the "why" behind each commit)
 
@@ -236,15 +255,17 @@ The same diagram applies to `get_current`, except the second hop is `?current=..
 
 ## Part IV — Testing notes
 
-The test suite (`tests/test_weather.py`, 11 tests) demonstrates two patterns worth internalizing:
+The test suite (`tests/test_weather.py`, 19 test functions / 21 pytest items) demonstrates three patterns worth internalizing:
 
 - **`MockAsyncClient` queues responses in order.** Because `get_forecast` and `get_current` make *two* HTTP calls (resolve, then fetch), each test must enqueue exactly two mocked responses in the correct order. If you forget the resolve response, the test reveals the two-hop architecture immediately.
 - **`pytest-asyncio`** lets us `await` the tool functions directly. Tools are just coroutines; `@mcp.tool()` doesn't wrap them in anything that breaks direct invocation. This is *why* tools should remain pure async functions: they're trivially testable.
+- **Prompt and resource coverage belongs in the same suite.** The tests now assert registration, metadata, rendering, and JSON text for `trip_weather_briefing`, `config://units`, and `config://supported_regions`, so the docs and host-facing surface stay in sync.
 
 Coverage at a glance:
 - 4 tests on `search_location` (happy, blank, empty, error)
 - 4 tests on `get_forecast` (happy, days>7, missing location, upstream error)
-- 3 tests on `get_current` (happy, invalid id, missing location, upstream error)
+- 4 tests on `get_current` (happy, invalid id, missing location, upstream error)
+- 7 tests on prompts/resources/tool metadata
 
 ---
 
@@ -258,13 +279,14 @@ Coverage at a glance:
 | **FastMCP** | High-level Python framework on top of the raw MCP protocol; uses decorators to register tools. |
 | **Tool** | A model-callable function with a typed input schema and a structured result. |
 | **Tool description** | The natural-language text the model reads to decide *whether* to call a tool. In FastMCP it is sourced from the function's docstring and shipped in `tools/list`. |
-| **Resource** | Model-readable data identified by a URI. Not used in this repo yet. |
-| **Prompt** | Reusable parameterized prompt template exposed to the host. Not used yet. |
+| **Resource** | Model-readable data identified by a URI. Here it includes `config://units` and the JSON-backed `config://supported_regions`. |
+| **Prompt** | Reusable parameterized prompt template exposed to the host. Here it is `trip_weather_briefing`. |
 | **Transport** | The wire format carrying JSON-RPC messages. `stdio` here. |
 | **stdio transport** | Server launched as a subprocess; messages over stdin/stdout. |
 | **JSON-RPC 2.0** | The message format MCP rides on: `{jsonrpc, id, method, params}` / `{jsonrpc, id, result \| error}`. |
 | **Geocoding** | Converting a place name (or id) into latitude/longitude. Done by Open-Meteo Geocoding API. |
 | **`location_id` vs `id`** | Internal canonical name vs the field the upstream API uses. Bridged by `_normalize_location(id_key=...)`. |
+| **Supported regions** | The JSON list of ISO country codes that backs `config://supported_regions`. |
 | **WMO weather code** | Integer (0–99) defined by the World Meteorological Organization mapping to a sky/precipitation condition. |
 | **`async`/`await`** | Python coroutine syntax. Allows non-blocking I/O — important so multiple tool calls (or other server work) don't serialize on network latency. |
 | **`httpx.AsyncClient`** | Modern async HTTP client used for the Open-Meteo calls. |
@@ -286,7 +308,9 @@ Try answering these *without* scrolling up.
 8. Why is `_normalize_location` a separate function instead of inline dict construction inside each tool?
 9. In the test suite, why must `MockAsyncClient` enqueue **two** responses for a single `get_forecast` test? What does that reveal about the server's architecture?
 10. Looking at the commit history (coordinates → location ids → canonical id field name), state in one sentence the design principle this evolution embodies.
-11. The three tool docstrings deliberately use phrases like "Use this BEFORE…", "Do NOT use to retrieve weather", and "For current conditions, use get_current instead." Why is each of those three patterns there? Which model-facing problem does each one solve?
+11. What do `config://units` and `config://supported_regions` expose, and where does the supported regions list come from?
+12. The `trip_weather_briefing` prompt is not a tool. What host-facing problem does a prompt solve that a tool does not?
+13. The three tool docstrings deliberately use phrases like "Use this BEFORE…", "Do NOT use to retrieve weather", and "For current conditions, use get_current instead." Why is each of those three patterns there? Which model-facing problem does each one solve?
 
 ---
 
