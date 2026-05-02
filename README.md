@@ -8,6 +8,11 @@ Small MCP server backed by Open-Meteo.
 - `get_current(location_id)`
 - `get_forecast(location_id, days=5)`
 
+## Resources
+
+- `config://units`
+- `config://supported_regions`
+
 ## Setup
 
 ```bash
